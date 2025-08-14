@@ -1,0 +1,170 @@
+#!/bin/bash
+set -e
+
+# Configurable variables
+ISO_URL="https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-standard-3.19.1-x86_64.iso"
+ISO_FILE="alpine.iso"
+DISK_FILE="alpine.qcow2"
+DISK_SIZE="2G"
+VM_RAM="512M"
+SSH_PORT=2222
+APP_PORT=18000
+AUTO_INSTALL_SCRIPT="auto-install.sh"
+LOG_FILE='alpine.log'
+PID_FILE="/tmp/alpine.pid"
+
+# Create auto-install script for Alpine
+create_autoinstall_script() {
+  cat > "$AUTO_INSTALL_SCRIPT" <<EOF
+#!/bin/sh
+setup-alpine -f <<EOM
+us
+us
+localhost
+eth0
+dhcp
+none
+UTC
+root
+password
+password
+no
+no
+no
+EOM
+poweroff
+EOF
+  chmod +x "$AUTO_INSTALL_SCRIPT"
+}
+
+# Setup: install QEMU and download Alpine ISO
+setup() {
+  echo "🔧 Installing QEMU and downloading Alpine ISO..."
+  sudo apt update
+  sudo apt install -y qemu-system-x86 qemu-utils wget
+
+  if [ ! -f "$ISO_FILE" ]; then
+    wget "$ISO_URL" -O "$ISO_FILE"
+  fi
+
+  if [ ! -f "$DISK_FILE" ]; then
+    qemu-img create -f qcow2 "$DISK_FILE" "$DISK_SIZE"
+  fi
+
+  create_autoinstall_script
+
+  echo "✅ Setup complete. You can now run:"
+  echo "  $0 --runiso"
+  echo "  $0 --autoinstall"
+}
+
+# Boot into ISO manually
+runiso() {
+  qemu-system-x86_64 -m "$VM_RAM" -cdrom "$ISO_FILE" -hda "$DISK_FILE" \
+    -boot d -net nic -net user,hostfwd=tcp::$SSH_PORT-:22 \
+    -nographic
+}
+
+# Run unattended Alpine install
+autoinstall() {
+  echo "🚀 Starting unattended Alpine install..."
+  qemu-system-x86_64 -m "$VM_RAM" -cdrom "$ISO_FILE" -hda "$DISK_FILE" \
+    -boot d -net nic -net user \
+    -nographic -serial file:"$AUTO_INSTALL_SCRIPT"
+}
+
+# Run current Alpine VM state
+runvm() {
+  echo "🚀 Running Alpine VM from current disk state..."
+  nohup qemu-system-x86_64 -m "$VM_RAM" -hda "$DISK_FILE" \
+    -net nic -net user,hostfwd=tcp::$SSH_PORT-:22,hostfwd=tcp::$APP_PORT-:8000 \
+    -nographic > "$LOG_FILE" 2>&1 &
+  
+  VM_PID=$!
+
+  echo "$VM_PID" > "$PID_FILE"
+  echo "✅ VM started with PID $VM_PID. Output logged to $LOG_FILE"
+
+}
+
+shutdown_vm() {
+  if [ ! -f "$PID_FILE" ]; then
+    echo "❌ No PID file found. Is the VM running?"
+    exit 1
+  fi
+
+  VM_PID=$(cat "$PID_FILE")
+  if kill -0 "$VM_PID" 2>/dev/null; then
+    echo "🛑 Shutting down VM with PID $VM_PID"
+    kill "$VM_PID"
+    sleep 1
+    if kill -0 "$VM_PID" 2>/dev/null; then
+      echo "⚠️ VM did not terminate gracefully. Sending SIGKILL..."
+      kill -9 "$VM_PID"
+    fi
+    echo "✅ VM terminated."
+    rm -f "$PID_FILE"
+  else
+    echo "❌ Process $VM_PID not found. Cleaning up PID file."
+    rm -f "$PID_FILE"
+  fi
+}
+
+# Create snapshot
+snapshot() {
+  local name="$1"
+  [ -z "$name" ] && { echo "❌ Snapshot name required."; exit 1; }
+  qemu-img snapshot -c "$name" "$DISK_FILE"
+  echo "✅ Snapshot '$name' created."
+}
+
+# Run from snapshot
+runsnapshot() {
+  local name="$1"
+  [ -z "$name" ] && { echo "❌ Snapshot name required."; exit 1; }
+  qemu-img snapshot -a "$name" "$DISK_FILE"
+  qemu-system-x86_64 -m "$VM_RAM" -hda "$DISK_FILE" \
+    -net nic -net user,hostfwd=tcp::$SSH_PORT-:22, hostfwd=tcp::$APP_PORT-:8000 \
+    -nographic
+}
+
+# List snapshots
+listsnapshots() {
+  echo "📂 Available snapshots:"
+  qemu-img snapshot -l "$DISK_FILE"
+}
+
+# Delete snapshot
+deletesnapshot() {
+  local name="$1"
+  [ -z "$name" ] && { echo "❌ Snapshot name required."; exit 1; }
+  qemu-img snapshot -d "$name" "$DISK_FILE"
+  echo "🗑️ Snapshot '$name' deleted."
+}
+
+# Main dispatcher
+case "$1" in
+  --setup) setup ;;
+  --runiso) runiso ;;
+  --autoinstall) autoinstall ;;
+  --snapshot) snapshot "$2" ;;
+  --runsnapshot) runsnapshot "$2" ;;
+  --list) listsnapshots ;;
+  --delete) deletesnapshot "$2" ;;
+  --run) runvm ;;
+  --shutdown) shutdown_vm ;;
+  *)
+    echo "Usage:"
+    echo "  $0 --setup                 # Install QEMU and download Alpine ISO"
+    echo "  $0 --runiso                # Boot into Alpine ISO manually"
+    echo "  $0 --autoinstall           # Run unattended Alpine install"
+    echo "  $0 --snapshot <name>       # Create snapshot"
+    echo "  $0 --runsnapshot <name>    # Restore and run snapshot"
+    echo "  $0 --list                  # List snapshots"
+    echo "  $0 --run                   # run vm"
+    echo "  $0 --shutdown              # shutdown vm"
+    echo "  $0 --delete <name>         # Delete snapshot"
+    exit 1
+    ;;
+esac
+
