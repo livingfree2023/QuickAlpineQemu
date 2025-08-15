@@ -13,30 +13,6 @@ AUTO_INSTALL_SCRIPT="auto-install.sh"
 LOG_FILE='alpine.log'
 PID_FILE="/tmp/alpine.pid"
 
-# Create auto-install script for Alpine
-create_autoinstall_script() {
-  cat > "$AUTO_INSTALL_SCRIPT" <<EOF
-#!/bin/sh
-setup-alpine -f <<EOM
-us
-us
-localhost
-eth0
-dhcp
-none
-UTC
-root
-password
-password
-no
-no
-no
-EOM
-poweroff
-EOF
-  chmod +x "$AUTO_INSTALL_SCRIPT"
-}
-
 # Setup: install QEMU and download Alpine ISO
 setup() {
   echo "🔧 Installing QEMU and downloading Alpine ISO..."
@@ -50,8 +26,6 @@ setup() {
   if [ ! -f "$DISK_FILE" ]; then
     qemu-img create -f qcow2 "$DISK_FILE" "$DISK_SIZE"
   fi
-
-  create_autoinstall_script
 
   echo "✅ Setup complete. You can now run:"
   echo "  $0 --runiso"
@@ -146,24 +120,22 @@ deletesnapshot() {
 case "$1" in
   --setup) setup ;;
   --runiso) runiso ;;
-  --autoinstall) autoinstall ;;
-  --snapshot) snapshot "$2" ;;
+  --createsnapshot) snapshot "$2" ;;
   --runsnapshot) runsnapshot "$2" ;;
-  --list) listsnapshots ;;
-  --delete) deletesnapshot "$2" ;;
+  --listsnapshot) listsnapshots ;;
+  --deletesnapshot) deletesnapshot "$2" ;;
   --run) runvm ;;
   --shutdown) shutdown_vm ;;
   *)
     echo "Usage:"
     echo "  $0 --setup                 # Install QEMU and download Alpine ISO"
     echo "  $0 --runiso                # Boot into Alpine ISO manually"
-    echo "  $0 --autoinstall           # Run unattended Alpine install"
-    echo "  $0 --snapshot <name>       # Create snapshot"
+    echo "  $0 --createsnapshot <name> #Create snapshot"
     echo "  $0 --runsnapshot <name>    # Restore and run snapshot"
-    echo "  $0 --list                  # List snapshots"
+    echo "  $0 --listsnapshot          # List snapshots"
     echo "  $0 --run                   # run vm"
     echo "  $0 --shutdown              # shutdown vm"
-    echo "  $0 --delete <name>         # Delete snapshot"
+    echo "  $0 --deletesnapshot <name> # Delete snapshot"
     exit 1
     ;;
 esac
